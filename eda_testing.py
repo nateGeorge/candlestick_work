@@ -11,7 +11,10 @@ import dl_quandl_EOD as dlq
 stocks = dlq.load_stocks()
 
 qqq = stocks['QQQ']
-qqq['Close_1d_pct_chg'] = qqq['Adj_Close'].pct_change() * 100
+for i in range(1, 20):
+    qqq['Close_{}d_pct_chg'.format(i)] = qqq['Adj_Close'].pct_change(i) * 100
+    qqq['Close_{}d_pct_chg_future'.format(i)] = qqq['Close_{}d_pct_chg'.format(i)].shift(-i)
+
 
 def get_ohlc_for_talib(df):
     """
@@ -46,10 +49,15 @@ next_days = [full_df.index.get_loc(f) + 1 for f in filtered.index[:-1]]  # don't
 
 next_days_df = full_df.iloc[next_days]
 
-next_days_df['Close_1d_pct_chg'].hist(bins=50)
-mean_str = str(round(next_days_df['Close_1d_pct_chg'].mean(), 1))
-std_str = str(round(next_days_df['Close_1d_pct_chg'].std(), 1))
-plt.title('average: ' + mean_str + '\nstddev: ' + std_str)
-plt.xlabel('close-close pct change')
-plt.ylabel('count')
-plt.show()
+def plot_future_pct_chg(df, days=1):
+    """
+    plots future percent change 'days' number of days in the future
+    """
+    col = 'Close_{}d_pct_chg_future'.format(days)
+    df[col].hist(bins=50)
+    mean_str = str(round(df[col].mean(), 1))
+    std_str = str(round(df[col].std(), 1))
+    plt.title('average: ' + mean_str + '\nstddev: ' + std_str)
+    plt.xlabel('future {}d close-close pct change'.format(days))
+    plt.ylabel('count')
+    plt.show()
