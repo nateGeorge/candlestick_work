@@ -46,6 +46,15 @@ def get_all_candlesticks(df):
     return cs_df, full_df
 
 
+def get_cs_column_names():
+    """
+    gets candlestick pattern column names for df
+    """
+    pattern_functions = talib.get_function_groups()['Pattern Recognition']
+    column_names = [p[3:] for p in pattern_functions] # for dataframe; cuts out CDL
+    return column_names
+
+
 def get_hist_distro(df, full_df):
     latest = df.loc[df.index[-1], df.iloc[-1] != 0]
     query = ' & '.join(['{} == {}'.format(k, v) for k, v in latest.items()])
@@ -70,12 +79,66 @@ def plot_future_pct_chg(df, days=1):
 
 stocks = dlq.load_stocks()
 
+full_cs = {}
+for s in stocks:
+    stocks[s] = get_future_price_changes(stocks[s])
+    cs_df, full_df = get_all_candlesticks(stocks[s])
+    full_cs[s] = full_df
+
+# find stocks with most bearish signals
+column_names = get_cs_column_names()
+sums = {}
+for s in full_cs:
+    sums[s] = full_cs[s].loc[full_cs[s].index[-1], column_names].sum()
+
+sums_df = pd.DataFrame(data=sums, index=[0]).T
+sums_df.columns = ['latest_sum']
+sums_df.sort_values(by='latest_sum')
+# TODO: ignore small price; combine with trend data,
+
+# combine with zacks ESP -- find stocks with highly negative candle signals and upcoming earnings disappointments
+sys.path.append('../scrape_zacks')
+import zacks_utils as zu
+esp_df = zu.load_latest_esp()
+biggest_relative_chg, biggest_absolute_chg, sign_changes = zu.get_top_esp(esp_df)
+
+# stocks with negative candle signals and highlighted in negative ESP
+negatives = set(biggest_relative_chg[biggest_relative_chg['ESP'] < 0]['Symbol']).intersection(set(sums_df[sums_df['latest_sum'] < 0].index))
+# get trends
+sys.path.append('../stock_prediction/code')
+import exponential_fits as ef
+trends = {}
+for s in negatives:
+    trends[s] = ef.get_fits(stocks[s])
+
+# combine trend with ESP and candlestick patterns
+neg_df = pd.DataFrame()
+for s in negatives:
+    data = {}
+    data['15d_rank_score'] = trends[s]['15d_rank_score'].iloc[-1]
+    data['ESP'] = esp_df[esp_df['Symbol'] == s]['ESP'].iloc[0]
+    data['EPS_diff'] = esp_df[esp_df['Symbol'] == s]['EPS_diff'].iloc[0]
+    data['latest_cs_sum'] = sums_df.loc[s]['latest_sum']
+    df = pd.DataFrame(data=data, index=[s])
+    neg_df = pd.concat([neg_df, df])
+
+
+# TODO: clean up code and functionize things; also carry out for positive stocks
+
+
+# find highly positive candle signals and positive ESP
+
+
 qqq = stocks['QQQ']
 qqq = get_future_price_changes(qqq)
 qqq_cs_df, full_df = get_all_candlesticks(qqq)
 
 filtered = get_hist_distro(qqq_cs_df, full_df)
 plot_future_pct_chg(filtered)
+
+# get cumulative probability of price -- looking for high (>75%) cumulative probability of up or down move
+
+# TODO: check out what historical data looks like when incorporating trend
 
 # current day is belthold, longline, and marubozu (bearish) (10-25-2018 I think)
 # get all indices of where this happened
