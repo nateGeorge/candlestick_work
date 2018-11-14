@@ -1,8 +1,10 @@
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 import talib
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 sys.path.append('../stock_prediction/code')
@@ -33,11 +35,15 @@ def get_all_candlesticks(df):
     # penetration is percentage of penetration of one candle into another, e.g. 0.3 is 30%
     o, h, l, c = get_ohlc_for_talib(df)
     pattern_functions = talib.get_function_groups()['Pattern Recognition']
-    column_names = [p[3:] for p in pattern_functions] # for dataframe; cuts out CDL
+    # for dataframe; cuts out CDL, so will make things like 'CDLHARAMI' just 'HARAMI'
+    column_names = [p[3:] for p in pattern_functions]
     # for bearish, seems to give -100, for nothing, 0, for bullish, 100
     data = {}
     for col, p in zip(column_names, pattern_functions):
+        # detect candlestick pattern
         data[col] = getattr(talib, p)(o, h, l, c)
+        # would get 3-week exponential moving average of pattern
+        # data[col + '_mva_15'] = talib.EMA(data[col], timeperiod=15)
 
     cs_df = pd.DataFrame(data)
     cs_df.index = df.index
@@ -77,23 +83,108 @@ def plot_future_pct_chg(df, days=1):
     plt.show()
 
 
-stocks = dlq.load_stocks()
+def get_candlesticks(stocks, linear=False):
+    # gets targets (future price changes) and candlestick patterns from talib
+    full_cs = {}  # empty dict for dataframes with candlestick indicators
 
-full_cs = {}
-for s in stocks:
-    stocks[s] = get_future_price_changes(stocks[s])
-    cs_df, full_df = get_all_candlesticks(stocks[s])
-    full_cs[s] = full_df
+    if linear == False:
+        # get future price targets
+        jobs = []
+        with ProcessPoolExecutor() as executor:
+            for s in tqdm(stocks.keys()):
+                j = executor.submit(get_future_price_changes, stocks[s])
+                jobs.append(j)
+
+        for j in tqdm(jobs):
+            stocks[s] = j.result()
+
+        # get candlestick patterns
+        jobs = []
+        with ProcessPoolExecutor() as executor:
+            for s in tqdm(stocks.keys()):
+                j = executor.submit(get_all_candlesticks, stocks[s])
+                jobs.append((s, j))
+
+        for s, j in tqdm(jobs):
+            cs_df, full_df = j.result()
+            full_cs[s] = full_df
+
+    elif linear == True:
+        # linear way of doing it, for debugging
+        for s in tqdm(stocks):
+            stocks[s] = get_future_price_changes(stocks[s])
+            cs_df, full_df = get_all_candlesticks(stocks[s])
+            full_cs[s] = full_df
+
+    return stocks, full_cs
+
+
+
+def get_cs_sum(df, column_names):
+    # function to get candlestick sums, because doesn't seem like poolexecutors can handle pd functions
+    return df[column_names].sum(axis=1)
+
+
+def get_sums(full_cs, linear=False):
+    # gets sum of candlestick indicators for each stock in full_cs
+    column_names = get_cs_column_names()
+    jobs = []
+    if linear == False:
+        with ProcessPoolExecutor() as executor:
+            for s in tqdm(full_cs.keys()):
+                j = executor.submit(get_cs_sum, full_cs[s], column_names)
+                jobs.append((s, j))
+
+        for s, j in tqdm(jobs):
+            full_cs[s]['cs_sum'] = j.result()
+    elif linear == True:
+        print('getting candlestick sums')
+        for s in tqdm(full_cs):
+            full_cs[s]['cs_sum'] = full_cs[s][column_names].sum(axis=1)
+
+    return full_cs
+
+
+def get_active_cs_signals(full_cs, ticker, date='latest'):
+    """
+    gets non-zero candlestick signals for a given ticker
+    full_cs df needs to have candlestick signals in it
+
+    if date == 'latest', uses latest date
+    otherwise should use date in the form yyyy-mm-dd
+    """
+    columns = get_cs_column_names()
+    if date == 'latest':
+        df = full_cs[ticker].iloc[-1]
+    else:
+        df = full_cs[ticker].loc[date]
+
+    non_zero = df[columns][df[columns].nonzero()[0]]
+    print(non_zero)
+    return non_zero
+
+# load quandl stock price data
+stocks = dlq.load_stocks()
+# for testing
+# short_stocks = {s: stocks[s] for s in ['AAPL', 'SPY', 'QQQ']}
+# short_stocks, full_cs = get_candlesticks(short_stocks)
+
+print('getting price change targets and candlestick patterns')
+stocks, full_cs = get_candlesticks(stocks)
+print('getting candlestick sums')
+full_cs = get_sums(full_cs)
+
+latest_cs_sums = [full_cs[s]['cs_sum'][-1] for s in full_cs.keys()]
 
 # find stocks with most bearish signals
-column_names = get_cs_column_names()
-sums = {}
-for s in full_cs:
-    sums[s] = full_cs[s].loc[full_cs[s].index[-1], column_names].sum()
-
-sums_df = pd.DataFrame(data=sums, index=[0]).T
+sums_df = pd.DataFrame(data=latest_cs_sums, index=full_cs.keys())
 sums_df.columns = ['latest_sum']
-sums_df.sort_values(by='latest_sum')
+worst = sums_df.sort_values(by='latest_sum')
+best = worst.iloc[::-1]
+
+print('non-zero cs signals for', worst.index[0])
+nz = get_active_cs_signals(full_cs, worst.index[0])
+
 # TODO: ignore small price; combine with trend data,
 
 # combine with zacks ESP -- find stocks with highly negative candle signals and upcoming earnings disappointments
